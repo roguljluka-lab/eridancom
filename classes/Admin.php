@@ -13,6 +13,7 @@ class Admin {
     private $log_table;
     private $logovi_table;
     private $payments_table;
+    private $offers_table;
     private $per_page;
     private $current_page;
     private $offset;
@@ -31,6 +32,7 @@ class Admin {
         $this->log_table = $this->wpdb->prefix . 'dcr_logs';
         $this->logovi_table = $this->wpdb->prefix . 'dcr_logovi';
         $this->payments_table = $this->wpdb->prefix . 'dcr_eracuni_payments';
+        $this->offers_table = $this->wpdb->prefix . 'dcr_offers';
 
         $this->per_page = 50;
         $this->current_page = isset($_GET['pa']) ? max(1, intval($_GET['pa'])) : 1;
@@ -1837,6 +1839,7 @@ class Admin {
         $eracuni = new eRacuniClass();
 
         $url = 'https://dominant-core.com/dc-rezervacije/live-2.0/dc_api.php';
+        $start_time = microtime(true);
         $data['method'] = $method;
         $ch = curl_init($url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -1847,7 +1850,12 @@ class Admin {
             'Accept: application/json',
         ));
         $response = curl_exec($ch);
+        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curl_errno = curl_errno($ch);
+        $curl_error = curl_error($ch);
         curl_close($ch);
+
+        $this->maybe_log_dc_api_trace($method, $url, $data, $response, $http_code, $curl_errno, $curl_error, $start_time);
 
         if($method == 'check_licence' || $method == 'wspay') {
             return json_decode($response);
@@ -1897,6 +1905,7 @@ class Admin {
             'active_message' => $_POST['active_message'],
             'opci_uvjeti' => $_POST['opci_uvjeti'],
             'post_type' => $_POST['stranica_putovanja'],
+            'debug_api' => isset($_POST['debug_api']) ? 1 : 0,
         );
 
         $ws_pay_secret = $_POST['ws_pay_secret'];
@@ -1922,6 +1931,256 @@ class Admin {
         $_SESSION['dc_admin_success'] = 'Uspješno spremljeno';
         wp_redirect(admin_url('admin.php?page=dcr-postavke'));
 
+    }
+
+    public function check_and_create_missing_offers_last_7_days()
+    {
+        if (!current_user_can('administrator')) {
+            return array(
+                'found_ids' => array(),
+                'created_ids' => array(),
+                'skipped_ids' => array(),
+                'failed' => array(),
+            );
+        }
+
+        set_time_limit(0);
+
+        $found_ids = $this->wpdb->get_col($this->wpdb->prepare("
+            SELECT r.id
+            FROM {$this->rezervacije_table} r
+            LEFT JOIN {$this->offers_table} o ON o.reservation_id = r.id
+            WHERE o.reservation_id IS NULL
+              AND (r.broj_eracuni_ponude IS NULL OR r.broj_eracuni_ponude = '')
+              AND r.smece = %d
+              AND r.created_at >= DATE_SUB(NOW(), INTERVAL %d DAY)
+            ORDER BY r.id ASC
+        ", 0, 7));
+
+        $created_ids = array();
+        $skipped_ids = array();
+        $failed = array();
+
+        foreach ($found_ids as $reservation_id) {
+            if ($this->reservation_has_offer($reservation_id)) {
+                $skipped_ids[] = $reservation_id;
+                continue;
+            }
+
+            $result = $this->create_offer_for_reservation($reservation_id);
+
+            if (!empty($result['success'])) {
+                $created_ids[] = $reservation_id;
+            } else {
+                $failed[$reservation_id] = $result['message'] ?? 'Nepoznata greška.';
+            }
+
+            usleep(300000);
+        }
+
+        return array(
+            'found_ids' => $found_ids,
+            'created_ids' => $created_ids,
+            'skipped_ids' => $skipped_ids,
+            'failed' => $failed,
+        );
+    }
+
+    private function reservation_has_offer($reservation_id)
+    {
+        $offer_exists = $this->wpdb->get_var($this->wpdb->prepare(
+            "SELECT COUNT(*) FROM {$this->offers_table} WHERE reservation_id = %d",
+            $reservation_id
+        ));
+
+        if ($offer_exists > 0) {
+            return true;
+        }
+
+        $offer_number = $this->wpdb->get_var($this->wpdb->prepare(
+            "SELECT broj_eracuni_ponude FROM {$this->rezervacije_table} WHERE id = %d",
+            $reservation_id
+        ));
+
+        return !empty($offer_number);
+    }
+
+    private function create_offer_for_reservation($reservation_id)
+    {
+        $reservation = $this->get_rezervacija($reservation_id);
+
+        if (!$reservation) {
+            return array(
+                'success' => false,
+                'message' => 'Rezervacija nije pronađena.'
+            );
+        }
+
+        if ($this->reservation_has_offer($reservation_id)) {
+            return array(
+                'success' => false,
+                'message' => 'Ponuda već postoji za ovu rezervaciju.'
+            );
+        }
+
+        $dc_settings = $this->get_settings()->dc_postavke;
+        $method_of_payment = 'BankTransfer';
+        $iznos_za_uplatu = $reservation->putovanje_akontacija;
+        $ukupni_iznos_putovanja = $reservation->putovanje_ukupni_iznos;
+
+        if ($reservation->putovanje_type == 'izlet') {
+            $iznos_za_uplatu = $reservation->putovanje_ukupni_iznos;
+            $method_of_payment = 'BankTransfer';
+        } else if (in_array((int) $reservation->nacin_placanja, array(3, 5), true)) {
+            $iznos_za_uplatu = $reservation->putovanje_ukupni_iznos_kartica;
+            $ukupni_iznos_putovanja = $reservation->putovanje_ukupni_iznos_kartica;
+            $method_of_payment = 'CreditCard';
+        } else if ((int) $reservation->nacin_placanja === 4) {
+            $iznos_za_uplatu = $reservation->putovanje_ukupni_iznos;
+            $method_of_payment = 'BankTransfer';
+        }
+
+        $data = array(
+            'licence' => $dc_settings->licenca,
+            'md5pass' => $dc_settings->eracuni_password,
+            'token' => $dc_settings->eracuni_token,
+            'eracuni_broj_artikla' => $dc_settings->eracuni_broj_artikla,
+            'ime_ugovaratelja' => $reservation->ugovaratelj_ime,
+            'prezime_ugovaratelja' => $reservation->ugovaratelj_prezime,
+            'adresa_ugovaratelja' => $reservation->putnik_adresa,
+            'post_ugovaratelja' => $reservation->putnik_pb,
+            'mjesto_ugovaratelja' => $reservation->putnik_mjesto,
+            'number' => $reservation->putovanje_ta_booking_ref,
+            'naziv' => $reservation->putovanje_naziv,
+            'sifra' => $reservation->putovanje_sifra,
+            'ime_prezime_putnika' => $reservation->putnik_ime . ' ' . $reservation->putnik_prezime,
+            'iznos_za_uplatu' => $iznos_za_uplatu,
+            'ukupni_iznos_putovanja' => $ukupni_iznos_putovanja,
+            'reservation_id' => $reservation->id,
+            'methodOfPayment' => $method_of_payment,
+            'eracuni_posl_prostor' => $dc_settings->eracuni_posl_prostor
+        );
+
+        $offer = $this->dominant_core_api($data, 'cOF');
+        $offer_number = $offer->response->result->number ?? null;
+
+        if (empty($offer_number)) {
+            $this->store_logs_data_new('rezervacija', $reservation_id, 'Pokušaj kreiranja ponude nije uspio. Odgovor: ' . json_encode($offer));
+            return array(
+                'success' => false,
+                'message' => 'Ponuda nije kreirana. Provjerite odgovor API-ja.'
+            );
+        }
+
+        $this->wpdb->insert($this->offers_table, array(
+            'reservation_id' => $reservation_id,
+            'eracuni_offer_id' => $offer_number
+        ));
+
+        $this->wpdb->update(
+            $this->rezervacije_table,
+            array('broj_eracuni_ponude' => $offer_number),
+            array('id' => $reservation_id)
+        );
+
+        $this->store_logs_data_new('rezervacija', $reservation_id, 'Automatski kreirana ponuda: Ponuda br. ' . $offer_number . '.');
+
+        return array(
+            'success' => true,
+            'offer_number' => $offer_number,
+        );
+    }
+
+    private function maybe_log_dc_api_trace($method, $url, $request, $response, $http_code, $curl_errno, $curl_error, $start_time)
+    {
+        $settings = $this->get_dcr_settings();
+        $debug_api = isset($settings->debug_api) ? (int) $settings->debug_api : 0;
+
+        if (!(defined('WP_DEBUG_LOG') && WP_DEBUG_LOG) && $debug_api !== 1) {
+            return;
+        }
+
+        $duration_ms = round((microtime(true) - $start_time) * 1000, 2);
+        $sanitized_request = $this->sanitize_api_payload($request);
+        $response_payload = $this->sanitize_api_response_payload($response);
+
+        $trace = array(
+            'ts' => gmdate('c'),
+            'url' => $url,
+            'method' => $method,
+            'request' => $sanitized_request,
+            'response' => $this->limit_api_log_payload($response_payload),
+            'http_code' => $http_code,
+            'curl_errno' => $curl_errno,
+            'curl_error' => $curl_error,
+            'duration_ms' => $duration_ms,
+        );
+
+        error_log('DCR DC_API TRACE: ' . wp_json_encode($trace));
+    }
+
+    private function sanitize_api_response_payload($response)
+    {
+        $decoded = json_decode($response, true);
+
+        if (json_last_error() === JSON_ERROR_NONE) {
+            return $this->sanitize_api_payload($decoded);
+        }
+
+        return $this->sanitize_api_payload($response);
+    }
+
+    private function sanitize_api_payload($data)
+    {
+        if (is_array($data)) {
+            $sanitized = array();
+            foreach ($data as $key => $value) {
+                $sanitized[$key] = $this->sanitize_api_payload_value($key, $value);
+            }
+            return $sanitized;
+        }
+
+        if (is_object($data)) {
+            $sanitized = new stdClass();
+            foreach (get_object_vars($data) as $key => $value) {
+                $sanitized->$key = $this->sanitize_api_payload_value($key, $value);
+            }
+            return $sanitized;
+        }
+
+        return $data;
+    }
+
+    private function sanitize_api_payload_value($key, $value)
+    {
+        if ($this->is_sensitive_api_key($key)) {
+            return '***';
+        }
+
+        if (is_array($value) || is_object($value)) {
+            return $this->sanitize_api_payload($value);
+        }
+
+        return $value;
+    }
+
+    private function is_sensitive_api_key($key)
+    {
+        return (bool) preg_match('/(token|secret|secretkey|md5pass|password|ws_pay_secret|eracuni_token|authorization|api[_-]?key|api[_-]?token)/i', (string) $key);
+    }
+
+    private function limit_api_log_payload($payload, $limit = 4000)
+    {
+        if (is_string($payload)) {
+            return mb_substr($payload, 0, $limit);
+        }
+
+        $json = wp_json_encode($payload);
+        if ($json !== false && mb_strlen($json) > $limit) {
+            return mb_substr($json, 0, $limit) . '...';
+        }
+
+        return $payload;
     }
 
     public function potvrdena_rezervacija($rezervacija)

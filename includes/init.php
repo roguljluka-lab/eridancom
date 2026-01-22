@@ -59,6 +59,14 @@ function rezervacije_menu() {
         'dcr'
     );
     add_submenu_page(
+        'dcr',
+        'Alati',
+        'Alati',
+        'manage_options',
+        'dcr-alati',
+        'dcr'
+    );
+    add_submenu_page(
         null, // No parent menu — so it won't appear in the sidebar
         'Logs',
         'Logs',

@@ -127,6 +127,22 @@ if($end_page == 'dcr') {
     }
 
 
+} else if($end_page == 'alati') {
+
+    if (!current_user_can('administrator')) {
+        wp_redirect(admin_url('admin.php?page=dcr'));
+        exit();
+    }
+
+    $report = null;
+
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dcr_tools_check_offers'])) {
+        check_admin_referer('dcr_tools_check_offers', 'dcr_tools_nonce');
+        $report = $AdminClass->check_and_create_missing_offers_last_7_days();
+    }
+
+    include_once(DC_REZERVACIJE_PATH . 'views/admin/alati/alati.php');
+
 } else if($end_page == 'putnici') {
 
     if(!empty($action)) {
