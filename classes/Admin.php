@@ -2062,10 +2062,25 @@ class Admin {
         );
 
         $offer = $this->dominant_core_api($data, 'cOF');
+        $offer_id = $this->extract_offer_id($offer);
         $offer_number = $offer->response->result->number ?? null;
 
-        if (empty($offer_number)) {
-            $this->store_logs_data_new('rezervacija', $reservation_id, 'Pokušaj kreiranja ponude nije uspio. Odgovor: ' . json_encode($offer));
+        $this->store_logs_data_new(
+            'rezervacija',
+            $reservation_id,
+            'DC API create offer response: ' . wp_json_encode($this->sanitize_api_payload(array(
+                'status' => $offer->response->status ?? $offer->status ?? null,
+                'documentID' => $offer->response->result->documentID ?? null,
+                'number' => $offer_number,
+            )))
+        );
+
+        if (!$this->is_valid_offer_id($offer_id)) {
+            $sanitized_response = $this->sanitize_api_payload($offer);
+            error_log(
+                'DCR offer create failed - missing offerId. reservation_id=' . $reservation_id . ' response=' . wp_json_encode($sanitized_response)
+            );
+            $this->store_logs_data_new('rezervacija', $reservation_id, 'Pokušaj kreiranja ponude nije uspio. Odgovor: ' . wp_json_encode($sanitized_response));
             return array(
                 'success' => false,
                 'message' => 'Ponuda nije kreirana. Provjerite odgovor API-ja.'
@@ -2074,21 +2089,54 @@ class Admin {
 
         $this->wpdb->insert($this->offers_table, array(
             'reservation_id' => $reservation_id,
-            'eracuni_offer_id' => $offer_number
+            'eracuni_offer_id' => $offer_id
         ));
 
-        $this->wpdb->update(
-            $this->rezervacije_table,
-            array('broj_eracuni_ponude' => $offer_number),
-            array('id' => $reservation_id)
-        );
+        if (!empty($offer_number)) {
+            $this->wpdb->update(
+                $this->rezervacije_table,
+                array('broj_eracuni_ponude' => $offer_number),
+                array('id' => $reservation_id)
+            );
+        }
 
-        $this->store_logs_data_new('rezervacija', $reservation_id, 'Automatski kreirana ponuda: Ponuda br. ' . $offer_number . '.');
+        $this->store_logs_data_new('rezervacija', $reservation_id, 'Automatski kreirana ponuda: Ponuda br. ' . ($offer_number ?: $offer_id) . '.');
 
         return array(
             'success' => true,
-            'offer_number' => $offer_number,
+            'offer_number' => $offer_number ?: $offer_id,
         );
+    }
+
+    private function extract_offer_id($response)
+    {
+        $document_id = $response->response->result->documentID ?? null;
+        if (is_string($document_id)) {
+            $document_id = trim($document_id);
+        }
+
+        if (empty($document_id)) {
+            $fallback_number = $response->response->result->number ?? null;
+            if (is_string($fallback_number)) {
+                $fallback_number = trim($fallback_number);
+            }
+            return $fallback_number;
+        }
+
+        return $document_id;
+    }
+
+    private function is_valid_offer_id($offer_id)
+    {
+        if (is_numeric($offer_id)) {
+            return true;
+        }
+
+        if (is_string($offer_id) && trim($offer_id) !== '') {
+            return true;
+        }
+
+        return false;
     }
 
     private function maybe_log_dc_api_trace($method, $url, $request, $response, $http_code, $curl_errno, $curl_error, $start_time)
