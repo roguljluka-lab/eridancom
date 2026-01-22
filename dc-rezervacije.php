@@ -4,8 +4,8 @@ Plugin Name: DC Rezervacije
 Description: Dodatak za upravljanje rezervacijama. Online naplata kreditnim karticama i izdavanje računa. Potrebno imati aktivne WsPay i e-racuni usluge.
 Version: 2.8
 Author: Domagoj Rogošić
-Plugin URI: https://dominant-core.hr
-Author URI: https://dominant-core.hr
+Plugin URI: https://dominant-core.com
+Author URI: https://dominant-core.com
 Text Domain: dc-rezervacije
 Domain Path: /languages
 Requires at least: 4.0
