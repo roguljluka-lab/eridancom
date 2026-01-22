@@ -152,9 +152,113 @@ class Shortcode
         }
         // ako ne postoji duplikat rezervacije onda se dodaje putnik na eračune kraj
 
-        $this->finish_booking($putovanje, $nova_rezervacija_id, $postoji_duplikat_rezervacija, $dc_first_step_data, $eracuni_poziv_na_broj ?? null, $parameters);
+        $finish_result = $this->finish_booking($putovanje, $nova_rezervacija_id, $postoji_duplikat_rezervacija, $dc_first_step_data, $eracuni_poziv_na_broj ?? null, $parameters);
+        if (is_wp_error($finish_result)) {
+            $_SESSION['dc_danger'] = $finish_result->get_error_message();
+            $return_url = $_SESSION['dc_return_url'] ?? get_permalink($this->dc_settings->stranica_rezervacije);
+            wp_redirect($return_url);
+            exit();
+        }
         exit();
 
+    }
+
+    private function extract_offer_id($response)
+    {
+        if (!is_object($response)) {
+            return null;
+        }
+
+        $document_id = $response->response->result->documentID ?? null;
+        if (is_string($document_id)) {
+            $document_id = trim($document_id);
+        }
+
+        if (empty($document_id)) {
+            $fallback_number = $response->response->result->number ?? null;
+            if (is_string($fallback_number)) {
+                $fallback_number = trim($fallback_number);
+            }
+            return $fallback_number;
+        }
+
+        return $document_id;
+    }
+
+    private function is_valid_offer_id($offer_id)
+    {
+        if (is_numeric($offer_id)) {
+            return true;
+        }
+
+        if (is_string($offer_id) && trim($offer_id) !== '') {
+            return true;
+        }
+
+        return false;
+    }
+
+    private function log_offer_response($admin, $reservation_id, $offer, $context)
+    {
+        $status = null;
+        $document_id = null;
+        $number = null;
+
+        if (is_object($offer)) {
+            $status = $offer->response->status ?? $offer->status ?? null;
+            $document_id = $offer->response->result->documentID ?? null;
+            $number = $offer->response->result->number ?? null;
+        }
+        $payload = array(
+            'status' => sanitize_text_field((string) $status),
+            'documentID' => sanitize_text_field((string) $document_id),
+            'number' => sanitize_text_field((string) $number),
+        );
+
+        $admin->store_logs_data_new(
+            'a_rezervacija',
+            $reservation_id,
+            $context . ': ' . wp_json_encode($payload)
+        );
+    }
+
+    private function sanitize_api_payload($data)
+    {
+        if (is_array($data)) {
+            $sanitized = array();
+            foreach ($data as $key => $value) {
+                $sanitized[$key] = $this->sanitize_api_payload_value($key, $value);
+            }
+            return $sanitized;
+        }
+
+        if (is_object($data)) {
+            $sanitized = new stdClass();
+            foreach (get_object_vars($data) as $key => $value) {
+                $sanitized->$key = $this->sanitize_api_payload_value($key, $value);
+            }
+            return $sanitized;
+        }
+
+        return $data;
+    }
+
+    private function sanitize_api_payload_value($key, $value)
+    {
+        if ($this->is_sensitive_api_key($key)) {
+            return '***';
+        }
+
+        if (is_array($value) || is_object($value)) {
+            return $this->sanitize_api_payload($value);
+        }
+
+        return $value;
+    }
+
+    private function is_sensitive_api_key($key)
+    {
+        return (bool) preg_match('/(token|secret|secretkey|md5pass|password|ws_pay_secret|eracuni_token|authorization|api[_-]?key|api[_-]?token)/i', (string) $key);
     }
 
     public function finish_booking($putovanje, $nova_rezervacija_id, $postoji_duplikat_rezervacija, $dc_first_step_data, $eracuni_poziv_na_broj, $parameters)
@@ -243,13 +347,67 @@ class Shortcode
         // ako ne postoji duplikat rezervacije, kreiraj novu ponudu i preuzmi pdf za slanje
         if($postoji_duplikat_rezervacija === false) {
 
-            $offer = $admin->dominant_core_api($parameters, 'cOF');
-            $var_eracuni_broj_ponude = $offer->response->result->number;
-            $_SESSION['eracuni_broj_ponude'] = $var_eracuni_broj_ponude;
+            $existing_offer_id = $this->wpdb->get_var($this->wpdb->prepare(
+                "SELECT eracuni_offer_id FROM {$this->offers_table} WHERE reservation_id = %d LIMIT 1",
+                $nova_rezervacija_id
+            ));
 
-            $store_offer_id = $this->wpdb->insert($this->offers_table, array('reservation_id' => $nova_rezervacija_id, 'eracuni_offer_id' => $var_eracuni_broj_ponude));
+            if (!empty($existing_offer_id)) {
+                $existing_offer_number = $this->wpdb->get_var($this->wpdb->prepare(
+                    "SELECT broj_eracuni_ponude FROM {$this->rezervacije_table} WHERE id = %d LIMIT 1",
+                    $nova_rezervacija_id
+                ));
+                $var_eracuni_broj_ponude = $existing_offer_number ?: $existing_offer_id;
+                $_SESSION['eracuni_broj_ponude'] = $var_eracuni_broj_ponude;
+                $admin->store_logs_data_new(
+                    'a_rezervacija',
+                    $nova_rezervacija_id,
+                    'Preskoceno kreiranje ponude (idempotency). Postoji eracuni_offer_id: ' . sanitize_text_field($existing_offer_id)
+                );
+            } else {
+                $offer = $admin->dominant_core_api($parameters, 'cOF');
+                $offer_id = $this->extract_offer_id($offer);
+                $offer_number = null;
+                if (is_object($offer)) {
+                    $offer_number = $offer->response->result->number ?? null;
+                }
+                $this->log_offer_response($admin, $nova_rezervacija_id, $offer, 'DC API create offer response');
 
-            $admin->store_logs_data_new('a_rezervacija', $nova_rezervacija_id, 'Kreirana nova ponuda: Ponuda br. ' . $var_eracuni_broj_ponude . ' New Offer Response: ' . json_encode($offer));
+                if (!$this->is_valid_offer_id($offer_id)) {
+                    $sanitized_response = $this->sanitize_api_payload($offer);
+                    error_log(
+                        'DCR offer create failed - missing offerId. reservation_id=' . $nova_rezervacija_id . ' response=' . wp_json_encode($sanitized_response)
+                    );
+                    $admin->store_logs_data_new(
+                        'a_rezervacija_error',
+                        $nova_rezervacija_id,
+                        'DCR offer create failed - missing offerId. response=' . wp_json_encode($sanitized_response)
+                    );
+                    return new WP_Error('dcr_offer_missing', 'Došlo je do greške pri kreiranju ponude. Molimo, pokušajte ponovno ili kontaktirajte agenciju.');
+                }
+
+                $var_eracuni_broj_ponude = $offer_number ?: $offer_id;
+                $_SESSION['eracuni_broj_ponude'] = $var_eracuni_broj_ponude;
+
+                $this->wpdb->insert($this->offers_table, array(
+                    'reservation_id' => $nova_rezervacija_id,
+                    'eracuni_offer_id' => $offer_id
+                ));
+
+                if (!empty($offer_number)) {
+                    $this->wpdb->update(
+                        $this->rezervacije_table,
+                        array('broj_eracuni_ponude' => $offer_number),
+                        array('id' => $nova_rezervacija_id)
+                    );
+                }
+
+                $admin->store_logs_data_new(
+                    'a_rezervacija',
+                    $nova_rezervacija_id,
+                    'Kreirana nova ponuda: Ponuda br. ' . sanitize_text_field($var_eracuni_broj_ponude)
+                );
+            }
 
             // get pdf and save it to server
             $parameters['document_number'] = $var_eracuni_broj_ponude;
@@ -710,7 +868,13 @@ class Shortcode
                     // ako ne postoji duplikat rezervacije onda se dodaje putnik na eračune kraj
 
                     $eracuni_numer = $eracuni_poziv_na_broj ?? null;
-                    $this->finish_booking($putovanje, $nova_rezervacija_id, $postoji_duplikat_rezervacija, $dc_first_step_data, $eracuni_numer, $parameters);
+                    $finish_result = $this->finish_booking($putovanje, $nova_rezervacija_id, $postoji_duplikat_rezervacija, $dc_first_step_data, $eracuni_numer, $parameters);
+                    if (is_wp_error($finish_result)) {
+                        $_SESSION['dc_danger'] = $finish_result->get_error_message();
+                        $return_url = $_SESSION['dc_return_url'] ?? get_permalink($this->dc_settings->stranica_rezervacije);
+                        wp_redirect($return_url);
+                        exit();
+                    }
                     exit();
 
                 }
@@ -894,9 +1058,60 @@ class Shortcode
                             'eracuni_posl_prostor' => $this->dc_settings->eracuni_posl_prostor,
                         );
 
-                        $offer = $admin->dominant_core_api($data, 'cOF');
-                        $_SESSION['eracuni_broj_ponude'] = $offer->response->result->number;
-                        $store_offer_id = $this->wpdb->insert($this->offers_table, array('reservation_id' => $reservation->id, 'eracuni_offer_id' => $_SESSION['eracuni_broj_ponude']));
+                        $existing_offer_id = $this->wpdb->get_var($this->wpdb->prepare(
+                            "SELECT eracuni_offer_id FROM {$this->offers_table} WHERE reservation_id = %d LIMIT 1",
+                            $reservation->id
+                        ));
+
+                        if (!empty($existing_offer_id)) {
+                            $existing_offer_number = $this->wpdb->get_var($this->wpdb->prepare(
+                                "SELECT broj_eracuni_ponude FROM {$this->rezervacije_table} WHERE id = %d LIMIT 1",
+                                $reservation->id
+                            ));
+                            $_SESSION['eracuni_broj_ponude'] = $existing_offer_number ?: $existing_offer_id;
+                            $admin->store_logs_data_new(
+                                'a_rezervacija',
+                                $reservation->id,
+                                'Preskoceno kreiranje ponude (idempotency). Postoji eracuni_offer_id: ' . sanitize_text_field($existing_offer_id)
+                            );
+                        } else {
+                            $offer = $admin->dominant_core_api($data, 'cOF');
+                            $offer_id = $this->extract_offer_id($offer);
+                            $offer_number = null;
+                            if (is_object($offer)) {
+                                $offer_number = $offer->response->result->number ?? null;
+                            }
+                            $this->log_offer_response($admin, $reservation->id, $offer, 'DC API create offer response');
+
+                            if (!$this->is_valid_offer_id($offer_id)) {
+                                $sanitized_response = $this->sanitize_api_payload($offer);
+                                error_log(
+                                    'DCR offer create failed - missing offerId. reservation_id=' . $reservation->id . ' response=' . wp_json_encode($sanitized_response)
+                                );
+                                $admin->store_logs_data_new(
+                                    'a_rezervacija_error',
+                                    $reservation->id,
+                                    'DCR offer create failed - missing offerId. response=' . wp_json_encode($sanitized_response)
+                                );
+                                $_SESSION['dc_danger'] = 'Došlo je do greške pri kreiranju ponude. Molimo, pokušajte ponovno ili kontaktirajte agenciju.';
+                                wp_redirect(get_permalink($this->dc_settings->stranica_naplate));
+                                exit();
+                            }
+
+                            $_SESSION['eracuni_broj_ponude'] = $offer_number ?: $offer_id;
+                            $this->wpdb->insert($this->offers_table, array(
+                                'reservation_id' => $reservation->id,
+                                'eracuni_offer_id' => $offer_id
+                            ));
+
+                            if (!empty($offer_number)) {
+                                $this->wpdb->update(
+                                    $this->rezervacije_table,
+                                    array('broj_eracuni_ponude' => $offer_number),
+                                    array('id' => $reservation->id)
+                                );
+                            }
+                        }
 
                         $i_ugovaratelja = $reservation->ugovaratelj_ime;
                         $p_ugovaratelja = $reservation->ugovaratelj_prezime;
@@ -926,7 +1141,7 @@ class Shortcode
                         ), 'wspay');
 
                         $admin->store_logs_data_new('rezervacija', $id_rezervacije, 'Započeta uplata putem naplatnog linka. Iznos za uplatu: ' . $iznos_za_uplatu . ' €');
-                        $admin->store_logs_data_new('a_rezervacija', $id_rezervacije, 'Započeta uplata putem naplatnog linka. Iznos za uplatu: ' . $iznos_za_uplatu . ' €. Broj ponude: ' . $_SESSION['eracuni_broj_ponude'] .  ' e-racuni response: ' . json_encode($offer));
+                        $admin->store_logs_data_new('a_rezervacija', $id_rezervacije, 'Započeta uplata putem naplatnog linka. Iznos za uplatu: ' . $iznos_za_uplatu . ' €. Broj ponude: ' . $_SESSION['eracuni_broj_ponude'] . '.');
 
                         echo $dc_response->message;
                         exit();
