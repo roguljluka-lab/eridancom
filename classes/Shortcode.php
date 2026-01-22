@@ -165,6 +165,10 @@ class Shortcode
 
     private function extract_offer_id($response)
     {
+        if (!is_object($response)) {
+            return null;
+        }
+
         $document_id = $response->response->result->documentID ?? null;
         if (is_string($document_id)) {
             $document_id = trim($document_id);
@@ -196,9 +200,15 @@ class Shortcode
 
     private function log_offer_response($admin, $reservation_id, $offer, $context)
     {
-        $status = $offer->response->status ?? $offer->status ?? null;
-        $document_id = $offer->response->result->documentID ?? null;
-        $number = $offer->response->result->number ?? null;
+        $status = null;
+        $document_id = null;
+        $number = null;
+
+        if (is_object($offer)) {
+            $status = $offer->response->status ?? $offer->status ?? null;
+            $document_id = $offer->response->result->documentID ?? null;
+            $number = $offer->response->result->number ?? null;
+        }
         $payload = array(
             'status' => sanitize_text_field((string) $status),
             'documentID' => sanitize_text_field((string) $document_id),
@@ -357,7 +367,10 @@ class Shortcode
             } else {
                 $offer = $admin->dominant_core_api($parameters, 'cOF');
                 $offer_id = $this->extract_offer_id($offer);
-                $offer_number = $offer->response->result->number ?? null;
+                $offer_number = null;
+                if (is_object($offer)) {
+                    $offer_number = $offer->response->result->number ?? null;
+                }
                 $this->log_offer_response($admin, $nova_rezervacija_id, $offer, 'DC API create offer response');
 
                 if (!$this->is_valid_offer_id($offer_id)) {
@@ -1064,7 +1077,10 @@ class Shortcode
                         } else {
                             $offer = $admin->dominant_core_api($data, 'cOF');
                             $offer_id = $this->extract_offer_id($offer);
-                            $offer_number = $offer->response->result->number ?? null;
+                            $offer_number = null;
+                            if (is_object($offer)) {
+                                $offer_number = $offer->response->result->number ?? null;
+                            }
                             $this->log_offer_response($admin, $reservation->id, $offer, 'DC API create offer response');
 
                             if (!$this->is_valid_offer_id($offer_id)) {

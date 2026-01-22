@@ -1857,11 +1857,30 @@ class Admin {
 
         $this->maybe_log_dc_api_trace($method, $url, $data, $response, $http_code, $curl_errno, $curl_error, $start_time);
 
-        if($method == 'check_licence' || $method == 'wspay') {
-            return json_decode($response);
-        } else {
-            return $eracuni->send_to_eracuni(json_decode($response)->message);
+        if ($curl_errno) {
+            error_log('DCR DC API curl error: ' . $curl_error . ' (errno ' . $curl_errno . ')');
         }
+
+        if ($http_code < 200 || $http_code >= 300) {
+            error_log('DCR DC API unexpected HTTP code: ' . $http_code);
+        }
+
+        $decoded_response = json_decode($response);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log('DCR DC API invalid JSON response: ' . json_last_error_msg());
+            return null;
+        }
+
+        if($method == 'check_licence' || $method == 'wspay') {
+            return $decoded_response;
+        }
+
+        if (!isset($decoded_response->message)) {
+            error_log('DCR DC API missing message payload for method ' . $method);
+            return null;
+        }
+
+        return $eracuni->send_to_eracuni($decoded_response->message);
 
 
     }
@@ -2063,14 +2082,17 @@ class Admin {
 
         $offer = $this->dominant_core_api($data, 'cOF');
         $offer_id = $this->extract_offer_id($offer);
-        $offer_number = $offer->response->result->number ?? null;
+        $offer_number = null;
+        if (is_object($offer)) {
+            $offer_number = $offer->response->result->number ?? null;
+        }
 
         $this->store_logs_data_new(
             'rezervacija',
             $reservation_id,
             'DC API create offer response: ' . wp_json_encode($this->sanitize_api_payload(array(
-                'status' => $offer->response->status ?? $offer->status ?? null,
-                'documentID' => $offer->response->result->documentID ?? null,
+                'status' => is_object($offer) ? ($offer->response->status ?? $offer->status ?? null) : null,
+                'documentID' => is_object($offer) ? ($offer->response->result->documentID ?? null) : null,
                 'number' => $offer_number,
             )))
         );
@@ -2110,6 +2132,10 @@ class Admin {
 
     private function extract_offer_id($response)
     {
+        if (!is_object($response)) {
+            return null;
+        }
+
         $document_id = $response->response->result->documentID ?? null;
         if (is_string($document_id)) {
             $document_id = trim($document_id);
