@@ -1858,16 +1858,16 @@ class Admin {
         $this->maybe_log_dc_api_trace($method, $url, $data, $response, $http_code, $curl_errno, $curl_error, $start_time);
 
         if ($curl_errno) {
-            error_log('DCR DC API curl error: ' . $curl_error . ' (errno ' . $curl_errno . ')');
+            error_log('DCR DC API curl error: ' . $curl_error . ' (errno ' . $curl_errno . ', method ' . $method . ')');
         }
 
         if ($http_code < 200 || $http_code >= 300) {
-            error_log('DCR DC API unexpected HTTP code: ' . $http_code);
+            error_log('DCR DC API unexpected HTTP code: ' . $http_code . ' (method ' . $method . ')');
         }
 
         $decoded_response = json_decode($response);
         if (json_last_error() !== JSON_ERROR_NONE) {
-            error_log('DCR DC API invalid JSON response: ' . json_last_error_msg());
+            error_log('DCR DC API invalid JSON response: ' . json_last_error_msg() . ' (method ' . $method . ')');
             return null;
         }
 
@@ -2081,11 +2081,13 @@ class Admin {
         );
 
         $offer = $this->dominant_core_api($data, 'cOF');
-        $offer_id = $this->extract_offer_id($offer);
+        $offer_document_id = null;
         $offer_number = null;
         if (is_object($offer)) {
+            $offer_document_id = $offer->response->result->documentID ?? null;
             $offer_number = $offer->response->result->number ?? null;
         }
+        $offer_id = $this->extract_offer_id($offer);
 
         $this->store_logs_data_new(
             'rezervacija',
@@ -2097,10 +2099,13 @@ class Admin {
             )))
         );
 
-        if (!$this->is_valid_offer_id($offer_id)) {
+        if (!$this->is_valid_offer_id($offer_id) || (empty($offer_document_id) && empty($offer_number))) {
             $sanitized_response = $this->sanitize_api_payload($offer);
+            $log_detail = empty($offer_document_id) && empty($offer_number)
+                ? 'missing documentID/number'
+                : 'missing offerId';
             error_log(
-                'DCR offer create failed - missing offerId. reservation_id=' . $reservation_id . ' response=' . wp_json_encode($sanitized_response)
+                'DCR offer create failed - ' . $log_detail . '. reservation_id=' . $reservation_id . ' response=' . wp_json_encode($sanitized_response)
             );
             $this->store_logs_data_new('rezervacija', $reservation_id, 'Pokušaj kreiranja ponude nije uspio. Odgovor: ' . wp_json_encode($sanitized_response));
             return array(
