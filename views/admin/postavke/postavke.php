@@ -210,6 +210,13 @@
                         </td>
                     </tr>
                     <tr>
+                        <th scope="row"><label for="debug_api">Debug API poziva</label></th>
+                        <td>
+                            <input type="checkbox" name="debug_api" id="debug_api" value="1" <?php echo !empty($settings->dc_postavke->debug_api) ? 'checked="checked"' : ''; ?>>
+                            <label for="debug_api">Logiraj DC API pozive u debug log</label>
+                        </td>
+                    </tr>
+                    <tr>
                         <td>&nbsp;</td>
                     </tr>
                     </tbody>

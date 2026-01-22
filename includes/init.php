@@ -59,6 +59,14 @@ function rezervacije_menu() {
         'dcr'
     );
     add_submenu_page(
+        'dcr',
+        'Alati',
+        'Alati',
+        'manage_options',
+        'dcr-alati',
+        'dcr'
+    );
+    add_submenu_page(
         null, // No parent menu — so it won't appear in the sidebar
         'Logs',
         'Logs',
@@ -134,7 +142,7 @@ function dc_plugin_update_info($res, $action, $args) {
     }
 
     // Povucite podatke o ažuriranju sa servera
-    $remote = wp_remote_get('https://rezervacije.dominant-core.hr/updates/dc-rezervacije-info.json');
+    $remote = wp_remote_get('https://rezervacije.dominant-core.com/updates/dc-rezervacije-info.json');
 
     if (!is_wp_error($remote) && wp_remote_retrieve_response_code($remote) === 200) {
         $body = json_decode(wp_remote_retrieve_body($remote));
@@ -165,7 +173,7 @@ function dc_plugin_push_update($transient) {
     }
 
     // Povucite podatke o najnovijoj verziji sa servera
-    $remote = wp_remote_get('https://rezervacije.dominant-core.hr/updates/dc-rezervacije-info.json');
+    $remote = wp_remote_get('https://rezervacije.dominant-core.com/updates/dc-rezervacije-info.json');
 
     if (!is_wp_error($remote) && wp_remote_retrieve_response_code($remote) === 200) {
         $body = json_decode(wp_remote_retrieve_body($remote));

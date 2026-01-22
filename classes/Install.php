@@ -343,7 +343,8 @@ function dcr_postavke() {
 			  `active_message` text NULL,
 			  `opci_uvjeti` text NULL,
 			  `post_type` text NOT NULL,
-			  `zadnje_osvjezeni_eracuni` datetime NULL
+			  `zadnje_osvjezeni_eracuni` datetime NULL,
+			  `debug_api` INT(1) NOT NULL DEFAULT 0
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci";
 
     require_once ABSPATH . 'wp-admin/includes/upgrade.php';
