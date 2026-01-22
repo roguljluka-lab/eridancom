@@ -1836,7 +1836,7 @@ class Admin {
 
         $eracuni = new eRacuniClass();
 
-        $url = 'https://dominant-core.hr/dc-rezervacije/live-2.0/dc_api.php';
+        $url = 'https://dominant-core.com/dc-rezervacije/live-2.0/dc_api.php';
         $data['method'] = $method;
         $ch = curl_init($url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);

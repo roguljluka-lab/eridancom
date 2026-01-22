@@ -114,7 +114,7 @@ if($end_page == 'dcr') {
 
     $current_user = wp_get_current_user();
 
-    if ($current_user->user_email === 'info@dominant-core.hr' || $current_user->user_email === 'domagoj.rogosic1@gmail.com') {
+    if ($current_user->user_email === 'info@dominant-core.com' || $current_user->user_email === 'domagoj.rogosic1@gmail.com') {
 
         $logs = $AdminClass->get_all_superadmin_logs();
         include_once(DC_REZERVACIJE_PATH . 'views/admin/logs/logs.php');

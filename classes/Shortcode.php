@@ -383,7 +383,7 @@ class Shortcode
                 'uplatni_link' => get_permalink($this->dc_settings->stranica_naplate) . '/?rid=' . $nova_rezervacija_id
             );
 
-            // dc_send_mail($to = 'info@dominant-core.hr', $subject = 'Naslov', $template = 'default', $attachments = null, $is_html = true / false, $copy_mail)
+            // dc_send_mail($to = 'info@dominant-core.com', $subject = 'Naslov', $template = 'default', $attachments = null, $is_html = true / false, $copy_mail)
             $this->dc_send_mail(
                 $this->dc_settings->admin_mail,
                 //'domagoj.rogosic1@gmail.com',
@@ -1321,7 +1321,7 @@ class Shortcode
         }
     }
 
-    public function dc_send_mail($to = 'info@dominant-core.hr', $subject = 'Naslov', $template = 'default', $data = null, $attachments = null, $is_html = true)
+    public function dc_send_mail($to = 'info@dominant-core.com', $subject = 'Naslov', $template = 'default', $data = null, $attachments = null, $is_html = true)
     {
 
         $domain = parse_url(home_url());
